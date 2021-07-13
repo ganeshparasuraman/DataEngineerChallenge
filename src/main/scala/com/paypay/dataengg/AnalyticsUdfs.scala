@@ -12,8 +12,29 @@ import scala.util.Try
 
 
 object AnalyticsUdf {
+  /***
+   *  REGEX Pattern from Line start to find the data in Log Line
+   */
   val PATTERN = """^([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}Z) (\S+) (\S+) (\S+) (\S+) (\S+) (\S+) (\S+) (\S+) (\S+) (\S+) "(\S+ \S+ \S+)" "([^"]*)" (\S+) (\S+)""".r
 
+  /**
+   * Case class that containes the overall Log Statement
+   * @param timestamp
+   * @param loadbalancerName
+   * @param clientIp
+   * @param backendIp
+   * @param rProcessingTime
+   * @param bProcessingTime
+   * @param responseTime
+   * @param lbStatusCode
+   * @param bkStatusCode
+   * @param bytesReceived
+   * @param bytesSent
+   * @param operation
+   * @param userAgent
+   * @param sslCipher
+   * @param sslProtocol
+   */
   case class LogLine(  timestamp: String,
                        loadbalancerName: String,
                        clientIp: String,
@@ -30,7 +51,12 @@ object AnalyticsUdf {
                        sslCipher:String,
                        sslProtocol:String)
 
-
+  /**
+   * This functions converts Timestamp in a given format to Milliseconds epoch time
+   * @param format
+   * @param date
+   * @return
+   */
   def getEpochTime(format: String)(date: String): Long = {
     //val df = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'");
     val dateFormat = new SimpleDateFormat(format)
@@ -41,6 +67,11 @@ object AnalyticsUdf {
 
   //def addEpochTimeCol(format: String) = udf[Long, String](getEpochTime(format))
 
+  /**
+   * This creates the function getEpochTime to an User Defined Functions
+   * @param format
+   * @return
+   */
   def addEpochTimeCol(format : String) = udf((date:String) => {
     //val df = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'");
 
@@ -51,8 +82,11 @@ object AnalyticsUdf {
   })
 
 
-
-
+  /**
+   * Parses a log line in the data to LogLine Struct / case class
+   * This is an UDF
+   * @return
+   */
 
   def parseUDF = udf( (log : String) => {
 
@@ -122,8 +156,11 @@ object AnalyticsUdf {
   )
 
 
-
-
+  /**
+   * The raw Dataframe is converted into a dataframe that has the schema of LogLine case class
+   * @param df
+   * @return
+   */
   def transformLogLine(df: DataFrame): DataFrame = {
 //    val spark = df.sparkSession
 //    import spark.implicits._
@@ -135,27 +172,62 @@ object AnalyticsUdf {
    df.withColumn("value", parseUDF(col("value"))).select("value.*")
   }
 
+  /**
+   * Removes the Lines that are not parsed correctly
+   * @param df
+   * @return
+   */
   def filterErrorLogs(df: DataFrame): DataFrame = {
     df.filter("backendIp != '-' AND rProcessingTime != -1")
   }
 
+  /**
+   * Gets the lines that errored out while parsing
+   * @param df
+   * @return
+   */
   def getErrorLines(df: DataFrame): DataFrame = {
     df.filter("backendIp = '-' OR rProcessingTime = -1")
   }
 
+  /**
+   * The converts the Timestamp to Epoch time.
+   * Spark functions does not support timestamp till Millisecond for this conversion , so an UDF is required for this
+   * @param format
+   * @param df
+   * @return
+   */
   def addEpochTime(format: String)(df: DataFrame): DataFrame = {
     //df.withColumn("epochTime",unix_timestamp(col("timestamp"),format))
     df.withColumn("epochTime", addEpochTimeCol(format)(col("timestamp")))
   }
 
+  /**
+   * This is a common tranformer functions, that returs columns specfied in the sequence of column names
+   * @param cols
+   * @param df
+   * @return
+   */
   def webLog(cols: Seq[String])(df: DataFrame): DataFrame = {
     df.select(cols.head, cols.tail: _*)
   }
 
+  /**
+   * Sorts the data frame in ascending by a column provided
+   * @param colName
+   * @param df
+   * @return
+   */
   def sortTransformer(colName: String)(df: DataFrame): DataFrame = {
     df.orderBy(asc(colName))
   }
 
+  /**
+   * The URL pattern contains HTTP Method and URL. Splitting them
+   * The IP address contain port infor and splitting them too.
+   * @param df
+   * @return
+   */
   def sanitizeUrlAndClientIp(df: DataFrame): DataFrame = {
     df.withColumn("url", split(col("operation"), " ")(1))
       .withColumn("operation", split(col("operation"), " ")(0))
@@ -164,6 +236,18 @@ object AnalyticsUdf {
 
   }
 
+  /**
+   * Assigning SessionID to the data
+   * 1. Partition by Client IP
+   * 2. Sort by Timestamp asc.
+   * 3.Find the previous and Next interaction time from the same client
+   * 4.Determine the duration of inactivity
+   * 5. If the duration of Inactivity is greater than 15 mins, then it is a new session
+   * 6. Get the start timestamp of each session along with session Length.
+   * 7. Assign a Monotonically increasing number that is assigned as the session ID
+   * @param orderedLogDf
+   * @return
+   */
   def sessionTransformer(orderedLogDf: DataFrame): DataFrame = {
     val duration : Long = Try(orderedLogDf.sparkSession.conf.get("session.duration").toLong).getOrElse(900000)
     val windowSpec = Window.partitionBy(col("clientIp")).orderBy("epochTime")
