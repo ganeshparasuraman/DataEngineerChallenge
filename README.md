@@ -69,4 +69,5 @@ This is not a pass or fail test, we want to hear about your challenges and your 
 4. Please import the notebook in any databricks spark environment with databricks runtime 8.3 (includes Apache Spark 3.1.1, Scala 2.12)
 5. This notebook may work in Spark 2.4 as well.
 6. notebook runs and populate hdfs tables in the databricks environment
+7. The scala files are added to this repo, that runs the solution in the local spark environment [Comments needs to be updated]
 
