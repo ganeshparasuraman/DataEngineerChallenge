@@ -173,7 +173,7 @@ val PATTERN = """^([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{
 //        .mode(SaveMode.Overwrite)
 //      .csv(path.concat(".csv"))
 //        df.show(20,false)
-      df.write.saveAsTable(fileName)
+      df.write.mode(SaveMode.Overwrite).saveAsTable(fileName)
       if (returnDf)
         df
       else
@@ -186,7 +186,7 @@ val PATTERN = """^([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{
 //        .option("header", "true")
 //        .mode(SaveMode.Overwrite)
 //        .csv(path.concat(".csv"))
-      df.write.saveAsTable(fileName)
+      df.write.mode(SaveMode.Overwrite).saveAsTable(fileName)
     }
 
     def readFile(spark : SparkSession , filePath : String) : DataFrame = {
@@ -213,30 +213,31 @@ val PATTERN = """^([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{
           if (triggerPipeline) {
             Try(writeResults(taskOp,outPath,taskName,true)) match {
               case Success(value) => {
+                 println(taskName + " table created...")
                 //trigger second pipeline here
                 analyticsPipelineTwo(value).seq.foreach{
                   case(taskOp,taskName) => {
                     Try(writeResults(taskOp,outPath,taskName)) match {
                       case Success(value) => {
-
+                          println(taskName + " table created...")
                       }
                       case Failure(exception) => {
-
+                          println(taskName + " failed with exception " + exception.toString)
                       }
                     }
                   }
                 }
               } case Failure(exception) => {
-
+                    println(taskName + " failed with exception " + exception.toString)
               }
             }
           } else {
             Try(writeResults(taskOp,outPath,taskName)) match {
               case Success(value) => {
-
+                    println(taskName + " table created...")
               }
               case Failure(exception) => {
-
+                    println(taskName + " failed with exception " + exception.toString)
               }
             }
           }
