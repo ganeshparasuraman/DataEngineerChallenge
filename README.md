@@ -61,3 +61,12 @@ We want to see how you handle:
 - Messy (ie real) data
 - Understanding data transformation
 This is not a pass or fail test, we want to hear about your challenges and your successes with this particular problem.
+
+## Steps performed by me for completing this challenge
+1. Signed up for community version in https://community.cloud.databricks.com/
+2. Uploaded the .gz file in the path /FileStore/tables/
+3. Created a scala notebook to process the data.
+4. Please import the notebook in any databricks spark environment with databricks runtime 8.3 (includes Apache Spark 3.1.1, Scala 2.12)
+5. This notebook may work in Spark 2.4 as well.
+6. notebook runs and populate hdfs tables in the databricks environment
+
