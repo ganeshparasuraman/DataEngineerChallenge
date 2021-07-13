@@ -1,0 +1,144 @@
+  package com.paypay.dataengg
+
+  import com.paypay.dataengg.AnalyticsUdf.{addEpochTime, filterErrorLogs, sanitizeUrlAndClientIp, sessionTransformer, sortTransformer, transformLogLine, webLog}
+  import org.apache.spark.sql.functions.{asc, avg, col, desc, sum}
+  import org.apache.spark.sql.{DataFrame, SaveMode, SparkSession}
+
+  import scala.util.{Failure, Success, Try}
+
+  case class Config(duration : Long)
+
+  class WebLogAnalytics extends Logging {
+
+    val colNames = Seq("timestamp","clientIp","operation","userAgent","epochTime")
+    val dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'"
+
+    def writeResults(df: DataFrame, path: String, returnDf : Boolean): DataFrame = {
+      df.coalesce(1)
+        .write
+        .option("header", "true")
+        .mode(SaveMode.Overwrite)
+      .csv(path.concat(".csv"))
+      //df.show(20,false)
+      if (returnDf)
+        df
+      else
+        null
+    }
+
+    def writeResults(df: DataFrame, path: String): Unit = {
+      df.coalesce(1)
+        .write
+        .option("header", "true")
+        .mode(SaveMode.Overwrite)
+        .csv(path.concat(".csv"))
+      //df.show(20,false)
+    }
+
+    def readFile(sparkSession : SparkSession , filePath : String) : DataFrame = {
+      val rawDf = sparkSession.read.text(filePath)
+      rawDf
+    }
+
+    def runTransformations(rawDf : DataFrame ) : (DataFrame,DataFrame) = {
+      val parsedLogLines= rawDf.transform(transformLogLine)
+        .transform(filterErrorLogs)
+        .transform(addEpochTime(dateFormat))
+        .transform(webLog(colNames))
+        .transform(sanitizeUrlAndClientIp)
+      val orderedLogDf = parsedLogLines.transform(sortTransformer("epochTime"))
+      orderedLogDf.persist
+      val sessionIdDf = orderedLogDf.transform(sessionTransformer)
+      (orderedLogDf,sessionIdDf)
+    }
+
+    def orchestrate(sparkSession: SparkSession, pipelines : Pipelines , inputPath : String, outPath : String, config : Map[String,Any]) = {
+
+      val rawDf = readFile(sparkSession,inputPath)
+      val (orderedLogDf,sessionIdDf) = runTransformations(rawDf)
+      pipelines.analyticsPipelineOne(orderedLogDf,sessionIdDf).seq.foreach{
+        case(taskOp, taskName, triggerPipeline) => {
+          if (triggerPipeline) {
+            Try(writeResults(taskOp,outPath.concat(taskName),true)) match {
+              case Success(value) => {
+                logger.info("The task %s completed successfully",taskName)
+                //trigger second pipeline here
+                pipelines.analyticsPipelineTwo(value).seq.foreach{
+                  case(taskOp,taskName) => {
+                    Try(writeResults(taskOp,outPath.concat(taskName))) match {
+                      case Success(value) => {
+                        logger.info("The task %s completed successfully",taskName)
+                      }
+                      case Failure(exception) => {
+                        logger.error("Failed with exception " + exception.getMessage + "- Task Name : " + taskName)
+                      }
+                    }
+                  }
+                }
+              } case Failure(exception) => {
+                logger.error("Failed with exception " + exception.getMessage + "- Task Name : " + taskName)
+              }
+            }
+          } else {
+            Try(writeResults(taskOp,outPath.concat(taskName))) match {
+              case Success(value) => {
+                logger.info("The task %s completed successfully",taskName)
+              }
+              case Failure(exception) => {
+                logger.error("Failed with exception " + exception.getMessage + "- Task Name : " + taskName)
+              }
+            }
+          }
+        }
+
+      }
+    }
+
+
+  }
+
+  class Pipelines {
+
+    val sessioniseLogs : (DataFrame,DataFrame) => DataFrame  = (orderedLogDf, sessionIdDf )  =>  {
+      val logsSessionized = orderedLogDf.join(sessionIdDf ,
+        orderedLogDf("clientIp") === sessionIdDf("client") &&
+          (orderedLogDf("epochTime") === sessionIdDf("startTime") ||
+            (orderedLogDf("epochTime") > sessionIdDf("startTime") && orderedLogDf("epochTime") - sessionIdDf("startTime") <= sessionIdDf("activityLength"))))
+      logsSessionized
+    }
+
+    val averageSessionTime : DataFrame => DataFrame = sessionIdDf => {
+      sessionIdDf.select(avg("sessionLength").alias("avgSessionTime"))
+    }
+
+    val mostEngagedUsers : DataFrame => DataFrame = sessionIdDf => {
+      val mostEngagedUsers = sessionIdDf.groupBy("client").
+        agg( sum("sessionLength").alias("totalSessionLength_ms") ,
+          avg("sessionLength").alias("avgSessionLength_ms")).
+        orderBy(desc("totalSessionLength_ms"))
+      mostEngagedUsers
+    }
+
+    val uniqueUrlVisit : DataFrame => DataFrame = logsSessionized => {
+      val uniqueUrlVisit = logsSessionized.groupBy("sessionId" , "url").count().alias("count").filter(col("count").equalTo(1))
+        .select("sessionId" , "url")
+      uniqueUrlVisit
+    }
+
+    val analyticsPipelineOne : (DataFrame,DataFrame) => List[(DataFrame,String,Boolean)] = (orderedLogDf, sessionIdDf) => {
+      List(
+        (sessioniseLogs(orderedLogDf,sessionIdDf),"log-sessions",true),
+        (averageSessionTime(sessionIdDf),"average-session-time",false),
+        (mostEngagedUsers(sessionIdDf),"most-engaged-users",false)
+      )
+    }
+
+
+    val analyticsPipelineTwo : DataFrame => List[(DataFrame,String)] = logsSessionized => {
+      List(
+        (uniqueUrlVisit(logsSessionized),"unique-url-visit")
+      )
+    }
+
+
+  }
